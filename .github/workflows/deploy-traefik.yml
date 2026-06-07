@@ -1,0 +1,48 @@
+name: 🚀 Deploy Traefik
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Serveur cible"
+        required: true
+        type: choice
+        options:
+          - allitu
+          - utilla
+          - bde-ensar
+
+jobs:
+  deploy:
+    name: Deploy Traefik on ${{ github.event.inputs.target }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.target }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ vars.SERVER_HOST }}
+          username: ${{ vars.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "docker-compose.yml,templates"
+          target: ${{ vars.DEPLOY_PATH }}
+
+      - name: Start Traefik
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ vars.SERVER_HOST }}
+          username: ${{ vars.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ${{ vars.DEPLOY_PATH }}
+            touch acme.json
+            chmod 600 acme.json
+            mkdir -p logs
+            docker network create traefik_proxy || true
+            docker compose pull
+            docker compose up -d
+            docker compose ps
