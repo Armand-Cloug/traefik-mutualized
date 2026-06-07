@@ -40,18 +40,34 @@ jobs:
       - name: Check required config
         run: |
           set -e
-          test -n "${SERVER_HOST}" || (echo "Missing SERVER_HOST" && exit 1)
-          test -n "${SERVER_USER}" || (echo "Missing SERVER_USER" && exit 1)
-          test -n "${SSH_PRIVATE_KEY}" || (echo "Missing SSH_PRIVATE_KEY" && exit 1)
-          test -n "${DEPLOY_PATH}" || (echo "Missing DEPLOY_PATH" && exit 1)
+          test -n "${SERVER_HOST}"            || (echo "Missing SERVER_HOST" && exit 1)
+          test -n "${SERVER_USER}"            || (echo "Missing SERVER_USER" && exit 1)
+          test -n "${SSH_PRIVATE_KEY}"        || (echo "Missing SSH_PRIVATE_KEY" && exit 1)
+          test -n "${DEPLOY_PATH}"            || (echo "Missing DEPLOY_PATH" && exit 1)
+          test -n "${TRAEFIK_ACME_EMAIL}"     || (echo "Missing TRAEFIK_ACME_EMAIL" && exit 1)
+          test -n "${TRAEFIK_DASHBOARD_AUTH}" || (echo "Missing TRAEFIK_DASHBOARD_AUTH" && exit 1)
           echo "Config OK"
         env:
-          SERVER_HOST: ${{ vars.SERVER_HOST }}
-          SERVER_USER: ${{ vars.SERVER_USER }}
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          SERVER_HOST:            ${{ vars.SERVER_HOST }}
+          SERVER_USER:            ${{ vars.SERVER_USER }}
+          SSH_PRIVATE_KEY:        ${{ secrets.SSH_PRIVATE_KEY }}
+          DEPLOY_PATH:            ${{ vars.DEPLOY_PATH }}
+          TRAEFIK_ACME_EMAIL:     ${{ vars.TRAEFIK_ACME_EMAIL }}
+          TRAEFIK_DASHBOARD_AUTH: ${{ secrets.TRAEFIK_DASHBOARD_AUTH }}
 
-      - name: Write SSH key file
+      - name: Inject dashboard password into middlewares.yml
+        run: |
+          python3 - <<'PYEOF'
+          import os
+          path = 'traefik/dynamic/middlewares.yml'
+          content = open(path).read()
+          auth = os.environ['TRAEFIK_DASHBOARD_AUTH']
+          open(path, 'w').write(content.replace('DASHBOARD_AUTH_PLACEHOLDER', auth))
+          PYEOF
+        env:
+          TRAEFIK_DASHBOARD_AUTH: ${{ secrets.TRAEFIK_DASHBOARD_AUTH }}
+
+      - name: Write SSH key
         run: |
           set -e
           mkdir -p ~/.ssh
@@ -60,13 +76,13 @@ jobs:
           chmod 600 ~/.ssh/id_ci
           ssh-keygen -y -f ~/.ssh/id_ci > /dev/null
 
-      - name: Sanity SSH
+      - name: Sanity SSH check
         run: |
           ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ci \
             ${{ vars.SERVER_USER }}@${{ vars.SERVER_HOST }} \
             "echo OK && whoami && hostname"
 
-      - name: Prepare target directory
+      - name: Prepare target directory on server
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ vars.SERVER_HOST }}
@@ -74,35 +90,38 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -e
+            DEPLOY_PATH="${{ vars.DEPLOY_PATH }}"
 
-            sudo mkdir -p ${{ vars.DEPLOY_PATH }}
-            sudo chown -R "$USER":"$USER" ${{ vars.DEPLOY_PATH }}
+            sudo mkdir -p "$DEPLOY_PATH"
+            sudo chown -R "$USER:$USER" "$DEPLOY_PATH"
 
-            if [ -f ${{ vars.DEPLOY_PATH }}/acme.json ]; then
-              cp ${{ vars.DEPLOY_PATH }}/acme.json /tmp/traefik-acme.json.backup
+            # Préserver acme.json (compte Let's Encrypt + certs émis)
+            if [ -f "$DEPLOY_PATH/traefik/acme.json" ]; then
+              cp "$DEPLOY_PATH/traefik/acme.json" /tmp/traefik-acme.json.backup
             fi
 
-            rm -rf ${{ vars.DEPLOY_PATH }}/* ${{ vars.DEPLOY_PATH }}/.[!.]* ${{ vars.DEPLOY_PATH }}/..?* || true
+            rm -rf "$DEPLOY_PATH"/* "$DEPLOY_PATH"/.[!.]* "$DEPLOY_PATH"/..?* 2>/dev/null || true
 
-            mkdir -p ${{ vars.DEPLOY_PATH }}/logs
+            mkdir -p "$DEPLOY_PATH/traefik/logs"
+            mkdir -p "$DEPLOY_PATH/traefik/dynamic"
 
             if [ -f /tmp/traefik-acme.json.backup ]; then
-              mv /tmp/traefik-acme.json.backup ${{ vars.DEPLOY_PATH }}/acme.json
-              chmod 600 ${{ vars.DEPLOY_PATH }}/acme.json
+              mv /tmp/traefik-acme.json.backup "$DEPLOY_PATH/traefik/acme.json"
+              chmod 600 "$DEPLOY_PATH/traefik/acme.json"
             fi
 
-      - name: Upload Traefik files
+      - name: Upload files
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ vars.SERVER_HOST }}
           username: ${{ vars.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "docker-compose.yml,templates,README.md,LICENSE"
+          source: "docker-compose.yml,traefik/dynamic,templates,README.md,LICENSE"
           target: ${{ vars.DEPLOY_PATH }}
           overwrite: true
           timeout: 120s
 
-      - name: Deploy Traefik
+      - name: Start Traefik
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ vars.SERVER_HOST }}
@@ -110,27 +129,24 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
+            cd "${{ vars.DEPLOY_PATH }}"
 
-            cd ${{ vars.DEPLOY_PATH }}
+            {
+              echo "TRAEFIK_HOST=traefik.${{ vars.SERVER_HOST }}"
+              echo "TRAEFIK_ACME_EMAIL=${{ vars.TRAEFIK_ACME_EMAIL }}"
+              echo "TRAEFIK_LOG_LEVEL=INFO"
+              echo "TRAEFIK_DASHBOARD=true"
+            } > .env
 
-            cat > .env <<EOF
-            TRAEFIK_HOST=traefik.${{ vars.SERVER_HOST }}
-            TRAEFIK_ACME_EMAIL=armandzireg@gmail.com
-            EOF
-
-            mkdir -p logs
-
-            if [ ! -f acme.json ]; then
-              sudo install -m 600 /dev/null acme.json
-              sudo chown "$USER":"$USER" acme.json
+            if [ ! -f traefik/acme.json ]; then
+              install -m 600 /dev/null traefik/acme.json
             else
-              chmod 600 acme.json
+              chmod 600 traefik/acme.json
             fi
 
-            sudo docker network create traefik_proxy || true
+            sudo docker network create traefik_proxy 2>/dev/null || true
 
             sudo docker compose pull
-            sudo docker compose up -d
+            sudo docker compose up -d --remove-orphans
             sudo docker compose ps
-
             sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'

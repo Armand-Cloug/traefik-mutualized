@@ -4,15 +4,16 @@ http:
       headers:
         frameDeny: true
         contentTypeNosniff: true
-        browserXssFilter: true
         referrerPolicy: "strict-origin-when-cross-origin"
         stsSeconds: 31536000
         stsIncludeSubdomains: true
         stsPreload: true
+        customResponseHeaders:
+          X-XSS-Protection: "1; mode=block"
 
-    # Générer le hash avec :
-    # htpasswd -nbB admin 'mot-de-passe-fort'
+    # Secret GitHub TRAEFIK_DASHBOARD_AUTH = sortie de : htpasswd -nbB admin 'mot-de-passe'
+    # Exemple : admin:$2y$05$xyz...
     dashboard-auth:
       basicAuth:
         users:
-          - "admin:$$2y$$05$$CHANGE_ME_CHANGE_ME_CHANGE_ME_CHANGE_ME_CHANGE_ME"
+          - "DASHBOARD_AUTH_PLACEHOLDER"
