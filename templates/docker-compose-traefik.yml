@@ -1,0 +1,21 @@
+# À ajouter dans un projet Docker existant :
+# docker compose -f docker-compose.yml -f docker-compose-traefik.yml up -d
+
+services:
+  app:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.PROJECT_NAME.rule=Host(`PROJECT_DOMAIN`)"
+      - "traefik.http.routers.PROJECT_NAME.entrypoints=websecure"
+      - "traefik.http.routers.PROJECT_NAME.tls=true"
+      - "traefik.http.routers.PROJECT_NAME.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.PROJECT_NAME.middlewares=security-headers@file"
+      - "traefik.http.services.PROJECT_NAME.loadbalancer.server.port=APP_INTERNAL_PORT"
+      - "traefik.docker.network=traefik_proxy"
+    networks:
+      - traefik_proxy
+
+networks:
+  traefik_proxy:
+    external: true
+    name: traefik_proxy
