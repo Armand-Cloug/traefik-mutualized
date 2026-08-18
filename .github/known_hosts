@@ -1,0 +1,23 @@
+# Empreintes SSH des VMs de déploiement (hashées).
+#
+# Tant qu'un hôte n'est pas listé ici, la CI se connecte en accept-new avec un
+# avertissement MITM dans les logs (cf. .github/scripts/init_ssh.sh).
+#
+# Ajout d'une VM (depuis une machine de confiance) :
+#   ssh-keyscan -H nouvelle-vm.exemple.fr >> .github/known_hosts
+#
+# Puis VÉRIFIER les empreintes obtenues contre celles de la VM :
+#   ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+#
+# Empreintes ED25519 relevées le 2026-08-18 (à confirmer sur chaque VM) :
+#   allitu.cloug.fr  SHA256:gG/PnXYCADLEa6P1WkaH2cv1cqHOZHXeCwQ8OXh2TAg
+#   utilla.cloug.fr  SHA256:Sp5MjMXGTmHPNdNXtGzjUTeW0l1+7m2NQWHf7oYCZjY
+#   bde-ensar.fr     SHA256:RLdgKJ84ji5p2BkPcK9+WeJk1+H7gOzx3oY32OyYyZM
+
+|1|yUW0rni+V6xq9TmVpWJnMQl8IX8=|emh6CiHjJfCk+JzCQlZg/E5rFLo= ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBIm4bgqD236w9LS0HtY9RN2bvH8EY031IFcGdLQsosEwXiONXirw71E7unQyEYwy+64l2Rc472vofIiCGDlHyjI=
+|1|qn/saNjuMcop4MKZCGm3buwuUFA=|yqFwkd8YPPaztpttXCyncOg/L5A= ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCk/1DWzF/UgKpuIhvg6p6nWgqPR9iuWMpT0u025QqzomMYHNbhgGonIfONwofyMX1JsdtSbn7EB7AQ+ZXdqxs540x3KUowQuLOp0SlOxHSTeLOBVGk2csgxzSTdYkwtVg1ZFS6cyYPySuBbp/48ySet/VNL26z/IK7rmZzSQWwx8ow1IbWNUFKnXaro6t3F7Z4AxFuLa12sHd6toZnlGpJ3LYXB1C5h/9uSwoswQPtyRStjJBmkHZxXzmPgv2ylFBojG9JAGvlheCl8Uevlw5EgE5O1W6JoSceqMZ9GKhJs3RdXRoVa4ddxIZARmXvT3w+PFbCw+4llTi9GK3P5ZsQ8DEOGgYIY57eByF8wRZyqSykJfP3nD+US+1IX4wKcDVjV7YrG37In7YbXuY/b1NY3qKEcJ9uZwlhIsy07mgM8A3XIoYpzGxX+Gz+cDoyPawOKLeSwH3XZ++GhKvekXe9wEfgiNu/kdvYovmhMx+3IzTvs7DNd8YnA5V8xIBWi6U=
+|1|0I9M0pK2OX06o5DeUycm0941aPY=|WeJSyoNlQ0knuPUYRfC2QFwESWE= ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMxRaYdTRDewoqHeyACbMHqq2algQc/yzYJUHIPQNIb1
+|1|DWS8hTWY2PxzbxYdWSDiwspOYc0=|4Ok2aJ9/SB7p5mh+TdeAqWrSB2c= ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMyQA1izDNVftUiwjmcZ+aiZzdxxYgeZYf6gk+FZiJq7
+|1|hWHQn96oouvdqfEbQLZQLaOH87A=|fMDNXOjDbmxigySYG5GWWGXYgys= ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDDGCpsLSO5D9caudegft04mjia6++Kw8ekeb/R+TN6dEsPpyjwDmAw7OV31OH3m0V98ApH6cqqCyH3Q0nvZcDr/sDhAu1pFuuwPoiV5wqnuwM0VrJYymOf98FJ2GhKhqDitz6V1q5+PucrUQHtaoLQx0tQ1Hg8aXWmk93KEzsA6G/il2EZMydjBz8SwWoV5xbLNvlusbprf8nTejjIgvpDdtPGto9uWiW3lm1SyTIXNTax1mqAQ00fdxhy2MCPNDZhm6E+CEp59rfqWbMy9I5B9yJY8m0r84VzewCsb6AlsyCSCA//KJ7rEdJqpWjZjgWZZ8UXD8yE+tX1WNoMzEWu6D4188MwsJimI31td6Al7v7OxkUyx5KvURRhnTqwcYGnk6NzzQGtlRaaX1qtYwViZSxireeVSZsRBOtF7tT0pbJ5kTzZkEZ1bTTeZXzUoN8wV2+S6wq7duXZPbgm1ehiGM4r1+2rbWriYte3wAtVFTObrV9sQ8qmBK5FTnWnWr8=
+|1|D8gjToEbsWtHAx60cmxlJlnNbjk=|5WR+GeuSAmPXa+NYbgn3ogiFK3I= ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBGZfy2LazUwuhJbY9vNokgd5B1B7bYC2Fdvk8Axqoh/mF7Pdg1jc1A5iP28qvO/48dLH5T8c8IS9DZoHZIsijJo=
+|1|Fy4wx2dF42bO5Q3IVFf/2bv3mRs=|xXG4I+4axN2OB2djBy8E3xwv1qs= ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBvthciipgJ908rSpF9667eXhjoRPGXFi+NEMWjMTQ/O

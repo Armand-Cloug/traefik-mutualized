@@ -1,0 +1,50 @@
+name: "🚀 Deploy — bde-prod (bde-ensar.fr)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Wrapper production : même chose que les autres VMs, plus une confirmation
+# textuelle obligatoire. Ce Traefik sert le site public bde-ensar.fr.
+#
+# Seul secret consommé : SSH_DEPLOY_KEY_BDE_PROD (environnement `vms`).
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Taper exactement "deploy-prod" pour confirmer'
+        required: true
+        type: string
+        default: ""
+      traefik_version:
+        description: "Tag GHCR à déployer (vide = version pilotée par le .env de la VM)"
+        required: false
+        type: string
+        default: ""
+      prune_dangling_images:
+        description: "docker image prune -f (dangling seulement) avant le pull"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  confirm:
+    name: "🔐 Confirmation"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Vérification de la saisie
+        run: |
+          if [ "${{ inputs.confirm }}" != "deploy-prod" ]; then
+            echo "::error::Confirmation invalide — saisis exactement 'deploy-prod'."
+            exit 1
+          fi
+          echo "Confirmation OK."
+
+  deploy:
+    needs: confirm
+    uses: ./.github/workflows/_deploy.yml
+    secrets: inherit
+    with:
+      secret_suffix: BDE_PROD
+      deploy_host: bde-ensar.fr
+      traefik_version: ${{ inputs.traefik_version }}
+      prune_dangling_images: ${{ inputs.prune_dangling_images }}

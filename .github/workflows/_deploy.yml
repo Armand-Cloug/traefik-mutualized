@@ -1,0 +1,217 @@
+name: "🚀 Deploy (réutilisable)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Workflow réutilisable appelé par deploy-<vm>.yml.
+# Méthode aYaline (docker-ci-builder / remote_deploy_v2) :
+#   1. rsync du strict nécessaire  : docker-compose.yml + .env.dist
+#   2. script de déploiement généré en CI, exécuté sur la VM via `ssh sh -s`
+#   3. la VM ne fait que : pull GHCR → up -d → healthcheck
+#
+# Rien n'est buildé sur la VM. Le répertoire de déploiement n'est JAMAIS
+# supprimé : traefik/acme.json et traefik/logs/ sont de l'état serveur et
+# survivent à tous les déploiements.
+#
+# Ce proxy n'a AUCUN secret applicatif : pas de dashboard, rien d'exposé.
+#
+# ── Secrets ──
+# Un SEUL environnement GitHub porte toutes les clés, nommées par serveur :
+#   SSH_DEPLOY_KEY_<SUFFIX>   ex. SSH_DEPLOY_KEY_ALLITU
+# Les secrets d'environnement ne sont résolus que par un job qui porte
+# `environment:` — d'où la structure : ce workflow le déclare, et les wrappers
+# appellent avec `secrets: inherit` (aucun bloc `secrets:` déclaré ici).
+#
+# La variable TRAEFIK_ACME_EMAIL est partagée par les VMs ; elle peut être
+# surchargée par serveur avec TRAEFIK_ACME_EMAIL_<SUFFIX>.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_call:
+    inputs:
+      secret_suffix:
+        description: "Suffixe des secrets/variables de cette VM (ex. ALLITU => SSH_DEPLOY_KEY_ALLITU)"
+        required: true
+        type: string
+      deploy_host:
+        description: "Hôte SSH de la VM"
+        required: true
+        type: string
+      environment:
+        description: "Environnement GitHub portant les clés (un seul pour toutes les VMs)"
+        required: false
+        type: string
+        default: vms
+      deploy_user:
+        required: false
+        type: string
+        default: deploy
+      deploy_path:
+        required: false
+        type: string
+        default: /opt/traefik
+      traefik_version:
+        description: "Tag GHCR à déployer. VIDE = la version reste pilotée par le .env de la VM."
+        required: false
+        type: string
+        default: ""
+      prune_dangling_images:
+        description: "docker image prune -f (dangling seulement) avant le pull"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  IMAGE_NAMESPACE: ghcr.io/armand-cloug/traefik-mutualized
+
+jobs:
+  deploy:
+    name: "Deploy → ${{ inputs.deploy_host }}"
+    runs-on: ubuntu-latest
+    # packages: read => le GITHUB_TOKEN du job peut tirer l'image GHCR privée,
+    # en CI comme sur la VM (login éphémère, cf. étape de déploiement).
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-traefik-${{ inputs.deploy_host }}
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validation du compose
+        run: |
+          chmod +x .github/scripts/*.sh
+          .github/scripts/check_docker_compose.sh docker-compose.yml
+
+      - name: Contrôle de la variable ACME
+        env:
+          ACME_EMAIL: ${{ vars[format('TRAEFIK_ACME_EMAIL_{0}', inputs.secret_suffix)] || vars.TRAEFIK_ACME_EMAIL }}
+        run: |
+          if [ -z "$ACME_EMAIL" ]; then
+            echo "::error::Variable TRAEFIK_ACME_EMAIL introuvable dans l'environnement '${{ inputs.environment }}' (ni TRAEFIK_ACME_EMAIL_${{ inputs.secret_suffix }})."
+            exit 1
+          fi
+          echo "[OK] e-mail Let's Encrypt configuré."
+
+      - name: Préparation SSH
+        env:
+          SSH_DEPLOY_PRIVATE_KEY: ${{ secrets[format('SSH_DEPLOY_KEY_{0}', inputs.secret_suffix)] }}
+          SSH_KEY_SECRET_NAME: SSH_DEPLOY_KEY_${{ inputs.secret_suffix }}
+          DEPLOY_HOST: ${{ inputs.deploy_host }}
+        run: .github/scripts/init_ssh.sh
+
+      # Le répertoire doit préexister et appartenir à `deploy` : ce user n'a pas
+      # sudo. Cf. .github/README.md → prérequis VM.
+      - name: Répertoire de déploiement
+        run: |
+          ssh "${{ inputs.deploy_user }}@${{ inputs.deploy_host }}" \
+            "test -d '${{ inputs.deploy_path }}' && test -w '${{ inputs.deploy_path }}'" \
+          || { echo "::error::${{ inputs.deploy_path }} absent ou non inscriptible par ${{ inputs.deploy_user }} sur ${{ inputs.deploy_host }}. Sur la VM : sudo mkdir -p ${{ inputs.deploy_path }} && sudo chown ${{ inputs.deploy_user }}: ${{ inputs.deploy_path }}"; exit 1; }
+
+      # Seuls le compose et le modèle d'env partent sur la VM. Ni conf dynamique
+      # (elle est dans l'image), ni .env, ni acme.json, ni logs.
+      - name: Rsync compose + .env.dist
+        run: |
+          rsync -avz --no-perms -O --timeout=300 \
+            --include=/docker-compose.yml \
+            --include=/.env.dist \
+            --exclude='*' \
+            -e "ssh -o ConnectTimeout=30" --itemize-changes \
+            ./ "${{ inputs.deploy_user }}@${{ inputs.deploy_host }}:${{ inputs.deploy_path }}/"
+
+      # La version effectivement déployée vient soit de l'input, soit du .env de
+      # la VM (soit du .env.dist au tout premier déploiement).
+      - name: Résolution de la version effective
+        id: version
+        run: |
+          set -e
+          V="$(printf '%s' "${{ inputs.traefik_version }}" | tr -d '[:space:]')"
+          SOURCE="input du workflow"
+          if [ -z "$V" ]; then
+            V="$(ssh "${{ inputs.deploy_user }}@${{ inputs.deploy_host }}" \
+                  "cd '${{ inputs.deploy_path }}' && grep -E '^TRAEFIK_VERSION=' .env 2>/dev/null | tail -1 | cut -d= -f2-" \
+                | tr -d '[:space:]' || true)"
+            SOURCE=".env de la VM"
+          fi
+          if [ -z "$V" ]; then
+            V="$(grep -E '^TRAEFIK_VERSION=' .env.dist | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
+            SOURCE=".env.dist (premier déploiement)"
+          fi
+          if [ -z "$V" ]; then
+            echo "::error::Impossible de résoudre la version Traefik à déployer."
+            exit 1
+          fi
+          echo "version=$V"  >> "$GITHUB_OUTPUT"
+          echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
+          echo "Version déployée : $V (source : $SOURCE)"
+
+      - name: Login GHCR (runner)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Échec immédiat et lisible si le tag n'existe pas sur GHCR, plutôt qu'un
+      # `docker compose pull` qui casse au milieu du déploiement.
+      - name: Vérification de l'image sur GHCR
+        run: |
+          set -e
+          ref="${IMAGE_NAMESPACE}/traefik:${{ steps.version.outputs.version }}"
+          if ! docker manifest inspect "$ref" > /dev/null 2>&1; then
+            echo "::error::Image absente : $ref — lance d'abord le workflow '🏗️ Build & push image' avec cette version."
+            exit 1
+          fi
+          echo "[OK] $ref"
+
+      - name: Déploiement distant (pull → up)
+        env:
+          DEPLOY_PATH: ${{ inputs.deploy_path }}
+          TRAEFIK_ACME_EMAIL: ${{ vars[format('TRAEFIK_ACME_EMAIL_{0}', inputs.secret_suffix)] || vars.TRAEFIK_ACME_EMAIL }}
+          # Vide => on ne touche pas au TRAEFIK_VERSION du .env de la VM.
+          TRAEFIK_VERSION: ${{ inputs.traefik_version }}
+          # Login registry éphémère sur la VM : le token meurt avec le job et
+          # `docker logout` est joué par un trap EXIT. Rien ne persiste.
+          REGISTRY: ghcr.io
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCKER_USE_SUDO: "0"
+          DOCKER_SERVICES: traefik
+          PRUNE_DANGLING: ${{ inputs.prune_dangling_images && '1' || '0' }}
+        run: |
+          .github/scripts/remote_deploy.sh | ssh "${{ inputs.deploy_user }}@${{ inputs.deploy_host }}" 'sh -s'
+
+      # Aucun dashboard à interroger : on vérifie que l'entrypoint web répond et
+      # applique la redirection HTTPS. Ça ne dépend d'aucune stack projet.
+      - name: Smoke test HTTP
+        run: |
+          set -e
+          url="http://${{ inputs.deploy_host }}/"
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url" || echo 000)
+            echo "[$i/12] $url → $code"
+            case "$code" in
+              301|308) echo "✅ Traefik répond et redirige vers HTTPS"; exit 0 ;;
+              2*|3*|4*) echo "::warning::$url répond $code — Traefik écoute, mais la redirection HTTPS n'est pas celle attendue."; exit 0 ;;
+            esac
+            sleep 5
+          done
+          echo "::error::Aucune réponse sur $url après 60 s — Traefik n'écoute pas sur :80 ?"
+          exit 1
+
+      - name: Récapitulatif
+        if: always()
+        run: |
+          {
+            echo "### Déploiement Traefik — ${{ inputs.deploy_host }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Cible | \`${{ inputs.deploy_user }}@${{ inputs.deploy_host }}:${{ inputs.deploy_path }}\` |"
+            echo "| Version | \`${{ steps.version.outputs.version }}\` (${{ steps.version.outputs.source }}) |"
+            echo "| Clé SSH | \`SSH_DEPLOY_KEY_${{ inputs.secret_suffix }}\` (env \`${{ inputs.environment }}\`) |"
+            echo "| Prune dangling | ${{ inputs.prune_dangling_images && 'oui' || 'non' }} |"
+            echo "| Résultat | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

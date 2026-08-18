@@ -1,0 +1,139 @@
+name: "🏗️ Build & push image"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Build de l'image HORS des serveurs, push sur GHCR. Aucune VM ne builde jamais
+# quoi que ce soit : le déploiement se contente de tirer le tag construit ici.
+#
+# Image : ghcr.io/armand-cloug/traefik-mutualized/traefik
+#
+# Le TAG EST LA VERSION DE TRAEFIK (v3.7.10), pour que TRAEFIK_VERSION dans le
+# .env de chaque serveur continue de piloter la version déployée. Un second tag
+# immuable `<version>-<run_number>` est poussé à chaque build : il permet
+# d'épingler une conf dynamique précise et de faire un rollback sans rebuild.
+#
+# Le build valide la conf dynamique embarquée (stage `verify` du Dockerfile,
+# équivalent Traefik du `nginx -t`) : une conf cassée n'arrive jamais sur GHCR.
+#
+# Aucun secret : l'auth registry passe par le GITHUB_TOKEN natif du job.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      traefik_version:
+        description: "Version de Traefik à builder (tag officiel, ex. v3.7.10)"
+        required: true
+        type: string
+        default: "v3.7.10"
+      push_latest:
+        description: "Pousser aussi le tag flottant 'latest'"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAMESPACE: ghcr.io/armand-cloug/traefik-mutualized
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Le compose déployé doit rester valide et sans directive `build:` — sinon on
+  # rebasculerait en douce sur un build côté VM.
+  # ───────────────────────────────────────────────────────────────────────────
+  validate:
+    name: "🔍 Validation du compose"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Directives obligatoires
+        run: |
+          chmod +x .github/scripts/*.sh
+          .github/scripts/check_docker_compose.sh docker-compose.yml
+
+      - name: Interpolation du compose
+        env:
+          # Renseigné côté serveur par le job de déploiement ; ici on ne teste
+          # que l'interpolation du fichier.
+          TRAEFIK_ACME_EMAIL: validate@example.com
+        run: |
+          cp .env.dist .env
+          docker compose config --quiet
+          rm -f .env
+
+  build:
+    name: "📦 Build & push traefik:${{ inputs.traefik_version }}"
+    runs-on: ubuntu-latest
+    needs: validate
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Résolution des tags
+        id: meta
+        run: |
+          set -e
+          VERSION="$(printf '%s' "${{ inputs.traefik_version }}" | tr -d '[:space:]')"
+          case "$VERSION" in
+            v[0-9]*) ;;
+            *) echo "::error::Version Traefik invalide : '$VERSION' (attendu : vX.Y.Z, ex. v3.7.10)."; exit 1 ;;
+          esac
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build_tag=${VERSION}-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      # L'image de base doit exister avant de lancer le build : message clair
+      # plutôt qu'un "manifest unknown" au milieu du build.
+      - name: Vérification de l'image Traefik amont
+        run: |
+          set -e
+          if ! docker manifest inspect "traefik:${{ steps.meta.outputs.version }}" > /dev/null 2>&1; then
+            echo "::error::traefik:${{ steps.meta.outputs.version }} introuvable sur Docker Hub — vérifie le tag (rc/beta exclus)."
+            exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Le stage `verify` du Dockerfile démarre le vrai binaire traefik sur la
+      # conf embarquée : build rouge = image jamais poussée.
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          provenance: false
+          build-args: |
+            TRAEFIK_VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha,scope=traefik
+          cache-to: type=gha,scope=traefik,mode=max
+          tags: |
+            ${{ env.IMAGE_NAMESPACE }}/traefik:${{ steps.meta.outputs.version }}
+            ${{ env.IMAGE_NAMESPACE }}/traefik:${{ steps.meta.outputs.build_tag }}
+            ${{ inputs.push_latest && format('{0}/traefik:latest', env.IMAGE_NAMESPACE) || '' }}
+
+      - name: Récapitulatif
+        run: |
+          {
+            echo "### Image poussée sur GHCR"
+            echo ""
+            echo "| Image | Tags |"
+            echo "|---|---|"
+            echo "| \`traefik\` | \`${{ steps.meta.outputs.version }}\`, \`${{ steps.meta.outputs.build_tag }}\` |"
+            echo ""
+            echo "Conf dynamique validée au build (démarrage réel du binaire traefik)."
+            echo ""
+            echo "Déploiement : lance **🚀 Deploy — allitu / utilla / bde-prod**."
+            echo "Laisse \`traefik_version\` vide pour garder la version pilotée par le \`.env\` du serveur,"
+            echo "ou passe \`${{ steps.meta.outputs.build_tag }}\` pour épingler exactement ce build."
+          } >> "$GITHUB_STEP_SUMMARY"

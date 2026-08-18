@@ -1,14 +1,39 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Traefik mutualisé — stack de déploiement (une VM = une instance).
+#
+# L'image n'est JAMAIS buildée ici : elle est construite par la CI (GitHub
+# Actions, workflow "Build & push image") et poussée sur GHCR. Ce fichier est
+# rsyncé sur la VM par le job de déploiement, puis `docker compose pull` + `up`
+# tirent le tag demandé.
+#
+# Le TAG DE L'IMAGE EST LA VERSION DE TRAEFIK : le .env du serveur pilote donc
+# la version déployée (TRAEFIK_VERSION). Un tag `<version>-<run>` est aussi
+# poussé à chaque build pour pouvoir épingler une conf précise / rollback.
+#
+# AUCUN SECRET. Pas de dashboard, pas d'UI, rien d'exposé par ce conteneur —
+# comme le proxy mutualisé aya-proxy d'aYaline. Traefik ne fait que router les
+# autres stacks du réseau traefik_proxy via leurs labels. Diagnostic :
+#   docker compose logs -f traefik
+#   docker exec traefik traefik healthcheck --ping
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   traefik:
-    image: traefik:${TRAEFIK_VERSION:-v3.4}
+    image: ghcr.io/armand-cloug/traefik-mutualized/traefik:${TRAEFIK_VERSION:-v3.7.10}
     container_name: traefik
     restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
     command:
       - --global.checknewversion=false
       - --global.sendanonymoususage=false
-      - --api.dashboard=${TRAEFIK_DASHBOARD:-true}
+      # /ping sur l'entrypoint interne `traefik` (:8080), NON publié :
+      # joignable seulement depuis le conteneur, pour le healthcheck.
+      - --ping=true
       - --log.level=${TRAEFIK_LOG_LEVEL:-INFO}
       - --accesslog=true
       - --accesslog.filepath=/var/log/traefik/access.log
@@ -21,7 +46,7 @@ services:
       - --entrypoints.websecure.address=:443
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
-      - --certificatesresolvers.letsencrypt.acme.email=${TRAEFIK_ACME_EMAIL}
+      - --certificatesresolvers.letsencrypt.acme.email=${TRAEFIK_ACME_EMAIL:?TRAEFIK_ACME_EMAIL manquant dans le .env}
       - --certificatesresolvers.letsencrypt.acme.storage=/acme.json
       - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
       - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
@@ -30,19 +55,43 @@ services:
       - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # État serveur — jamais rsyncé, jamais écrasé par la CI.
       - ./traefik/acme.json:/acme.json
       - ./traefik/logs:/var/log/traefik
-      - ./traefik/dynamic:/etc/traefik/dynamic:ro
-    labels:
-      - "traefik.enable=${TRAEFIK_DASHBOARD:-true}"
-      - "traefik.http.routers.traefik-dashboard.rule=Host(`${TRAEFIK_HOST}`)"
-      - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
-      - "traefik.http.routers.traefik-dashboard.tls=true"
-      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.traefik-dashboard.service=api@internal"
-      - "traefik.http.routers.traefik-dashboard.middlewares=dashboard-auth@file,security-headers@file"
+    # Aucun label : `exposedbydefault=false` + rien ici = Traefik ne s'expose
+    # pas lui-même. Ce sont les stacks projet qui portent leurs labels.
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - traefik_proxy
+    cap_drop:
+      - ALL
+    cap_add:
+      # Traefik binde :80 et :443. Docker met par défaut
+      # net.ipv4.ip_unprivileged_port_start=0 dans les conteneurs, donc le bind
+      # passerait même sans capability — on ne s'appuie pas là-dessus.
+      - NET_BIND_SERVICE
+      # Le conteneur tourne en root (uid 0) mais acme.json et traefik/logs/
+      # appartiennent au user `deploy` de la VM (uid ~1000). Sans DAC_OVERRIDE,
+      # root ne contourne plus les bits de permission : Traefik n'arrive plus à
+      # ouvrir /acme.json ("The ACME resolve is skipped from the resolvers
+      # list") ni à écrire l'access log — sans jamais devenir unhealthy.
+      # Le user `deploy` n'ayant pas sudo, il ne peut pas chown ces fichiers à
+      # root ; et relâcher les permissions d'acme.json (clés privées) n'est pas
+      # une option. Même logique que le service `db` de bde_ensar.
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
 
 networks:
   traefik_proxy:

@@ -1,3 +1,14 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Configuration dynamique NON secrète.
+#
+# Ce fichier est EMBARQUÉ DANS L'IMAGE (voir Dockerfile) et validé au build par
+# .github/scripts/verify_dynamic_conf.sh : une conf cassée n'est jamais poussée
+# sur GHCR, donc jamais déployable.
+#
+# Il n'est plus rsyncé sur les VMs et ne contient AUCUN secret — ce proxy n'en a
+# aucun : pas de dashboard, pas d'API, rien d'exposé. Les stacks projet
+# référencent ces middlewares par leurs labels (security-headers@file).
+# ─────────────────────────────────────────────────────────────────────────────
 http:
   middlewares:
     security-headers:
@@ -10,10 +21,3 @@ http:
         stsPreload: true
         customResponseHeaders:
           X-XSS-Protection: "1; mode=block"
-
-    # Secret GitHub TRAEFIK_DASHBOARD_AUTH = sortie de : htpasswd -nbB admin 'mot-de-passe'
-    # Exemple : admin:$2y$05$xyz...
-    dashboard-auth:
-      basicAuth:
-        users:
-          - "DASHBOARD_AUTH_PLACEHOLDER"

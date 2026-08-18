@@ -1,3 +1,5 @@
 .env
 traefik/acme.json
 traefik/logs/
+.claude/
+examples/

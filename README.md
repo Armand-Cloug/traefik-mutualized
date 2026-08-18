@@ -1,6 +1,6 @@
 # Mutualized Traefik Docker
 
-Projet de Traefik mutualisé pour héberger plusieurs projets Docker sur une même VM.
+Traefik mutualisé pour héberger plusieurs projets Docker sur une même VM.
 
 ## Objectif
 
@@ -8,108 +8,138 @@ Projet de Traefik mutualisé pour héberger plusieurs projets Docker sur une mê
 - Exposer automatiquement les projets Docker via des labels Traefik.
 - Utiliser un réseau Docker partagé `traefik_proxy`.
 - Garder une configuration simple côté projet avec un fichier `docker-compose-traefik.yml`.
-- Déployer Traefik via GitHub Actions sur `allitu.cloug.fr` ou `utilla.cloug.fr`.
+- Déployer via GitHub Actions sur `allitu.cloug.fr`, `utilla.cloug.fr` et `bde-ensar.fr`.
+- **Aucun secret, aucune interface exposée** : le proxy ne fait que router.
+
+## Principe de déploiement
+
+**L'image est buildée hors des serveurs et poussée sur GHCR ; la VM ne fait que
+tirer.** Aucun build sur la VM, aucun `scp` du dépôt : le déploiement ne rsync
+que `docker-compose.yml` et `.env.dist`, puis exécute un script généré en CI via
+`ssh 'sh -s'` (méthode aYaline `remote_deploy_v2`).
+
+```
+ghcr.io/armand-cloug/traefik-mutualized/traefik:<version-traefik>
+```
+
+Le tag de l'image **est** la version de Traefik, donc `TRAEFIK_VERSION` dans le
+`.env` du serveur pilote la version déployée.
+
+La configuration dynamique (`traefik/dynamic/middlewares.yml`) est embarquée
+dans l'image et validée pendant le build en démarrant le vrai binaire Traefik :
+une conf cassée n'est jamais poussée, donc jamais déployable.
+
+Ce conteneur n'expose **rien** — pas de dashboard, pas d'API. Comme le proxy
+mutualisé `aya-proxy` d'aYaline, il n'a donc aucun secret : il route les autres
+stacks via leurs labels, un point c'est tout.
+
+Tout le détail CI/CD est dans **[.github/README.md](.github/README.md)**.
 
 ## Structure
 
 ```text
 .
-├── .github/workflows/
-│   ├── deploy-traefik-allitu.yml
-│   └── deploy-traefik-utilla.yml
+├── .github/
+│   ├── workflows/
+│   │   ├── build.yml              # build + push GHCR
+│   │   ├── _deploy.yml            # workflow réutilisable (workflow_call)
+│   │   ├── deploy-allitu.yml      # wrapper VM
+│   │   ├── deploy-utilla.yml      # wrapper VM
+│   │   └── deploy-bde-prod.yml    # wrapper VM (confirmation obligatoire)
+│   ├── scripts/
+│   │   ├── init_ssh.sh
+│   │   ├── check_docker_compose.sh
+│   │   ├── remote_deploy.sh
+│   │   └── verify_dynamic_conf.sh
+│   ├── known_hosts
+│   └── README.md                  # doc CI/CD complète
+├── Dockerfile
 ├── docker-compose.yml
+├── .env.dist                      # modèle du .env serveur
 ├── .env.example
 ├── traefik/
 │   └── dynamic/
-│       └── middlewares.yml
+│       └── middlewares.yml        # conf NON secrète, embarquée dans l'image
 ├── templates/
 │   └── docker-compose-traefik.yml
-├── examples/
-│   └── docker-compose-traefik-nextjs.yml
 ├── README.md
 └── LICENSE
 ```
 
-## Secrets GitHub nécessaires
+## Configuration GitHub
 
-Dans `Settings > Secrets and variables > Actions` :
+Un **seul** environnement GitHub (`vms`) porte tout, les clés étant nommées par
+serveur :
 
-| Nom | Type | Description |
+| Type | Nom | Description |
 |---|---|---|
-| `SERVER_USER` | Secret | Utilisateur SSH sur les serveurs |
-| `ALLITU_SSH_KEY` | Secret | Clé privée SSH pour `allitu.cloug.fr` |
-| `UTILLA_SSH_KEY` | Secret | Clé privée SSH pour `utilla.cloug.fr` |
+| Secret | `SSH_DEPLOY_KEY_ALLITU` | clé privée SSH `deploy@allitu.cloug.fr` |
+| Secret | `SSH_DEPLOY_KEY_UTILLA` | clé privée SSH `deploy@utilla.cloug.fr` |
+| Secret | `SSH_DEPLOY_KEY_BDE_PROD` | clé privée SSH `deploy@bde-ensar.fr` |
+| Variable | `TRAEFIK_ACME_EMAIL` | e-mail du compte Let's Encrypt |
 
-Les hosts sont directement définis dans les workflows :
+Rien d'autre : hôtes, users SSH, chemins `/opt/traefik` et namespace registry
+sont en dur dans les workflows. Les clés SSH sont les seuls secrets, et elles ne
+concernent que l'accès aux machines — le proxy lui-même n'en a aucun.
 
-- `allitu.cloug.fr`
-- `utilla.cloug.fr`
+| Suffixe | Hôte |
+|---|---|
+| `ALLITU` | `allitu.cloug.fr` |
+| `UTILLA` | `utilla.cloug.fr` |
+| `BDE_PROD` | `bde-ensar.fr` |
 
 ## Déploiement
 
-Depuis GitHub Actions :
+Depuis l'onglet **Actions** :
 
-1. Aller dans l'onglet `Actions`.
-2. Choisir :
-   - `Deploy Traefik — allitu.cloug.fr`
-   - ou `Deploy Traefik — utilla.cloug.fr`
-3. Cliquer sur `Run workflow`.
-4. Saisir exactement :
+1. **🏗️ Build & push image** — `traefik_version` (défaut `v3.7.10`) → Run.
+2. **🚀 Deploy — allitu / utilla / bde-prod** → Run.
+   - `traefik_version` vide ⇒ la version reste celle du `.env` de la VM ;
+   - `traefik_version` rempli ⇒ figée dans le `.env` de la VM après vérification
+     du tag sur GHCR.
+   - `bde-prod` demande en plus la confirmation `deploy-prod`.
 
-```text
-deploy-traefik
-```
+Le pipeline :
 
-Le pipeline va :
+- vérifie le compose (`cap_drop`, `logging`, `restart`, `cpus`, `memory`,
+  absence de `build:`) ;
+- se connecte en SSH (`known_hosts` versionné, strict host checking) ;
+- rsync `docker-compose.yml` + `.env.dist` **et rien d'autre** ;
+- garantit `traefik/acme.json` (600), `traefik/logs/` et le réseau
+  `traefik_proxy` ;
+- se logue à GHCR le temps du pull (logout par `trap`), puis
+  `docker compose up -d --force-recreate traefik` ;
+- vérifie que le conteneur tourne et répond à `traefik healthcheck --ping` ;
+- smoke test HTTP sur `http://<hôte>/` (301 attendu = redirection HTTPS active).
 
-- se connecter au serveur en SSH ;
-- créer `/opt/traefik` ;
-- préserver `traefik/acme.json` s'il existe déjà ;
-- envoyer les fichiers du dépôt ;
-- installer Docker si nécessaire ;
-- créer le réseau `traefik_proxy` ;
-- lancer Traefik.
+Le répertoire de déploiement n'est **jamais** supprimé : `traefik/acme.json`
+(compte Let's Encrypt + certificats) et les logs restent sur la VM.
 
-## Configuration Traefik globale
+## Version de Traefik
 
-Le fichier principal est :
+Défaut actuel : **`v3.7.10`** (dernière stable). Elle se change à deux endroits
+indépendants :
 
-```text
-docker-compose.yml
-```
+- **globalement** : input `traefik_version` du workflow de build, puis du
+  déploiement ;
+- **par serveur** : `TRAEFIK_VERSION` dans `/opt/traefik/.env`.
 
-Il expose :
+Toute version doit avoir été buildée et poussée sur GHCR au préalable.
 
-- HTTP : port `80`
-- HTTPS : port `443`
-- dashboard Traefik sur :
-  - `traefik.allitu.cloug.fr`
-  - `traefik.utilla.cloug.fr`
+## Diagnostic
 
-Selon le serveur ciblé.
-
-## Sécuriser le dashboard
-
-Le dashboard utilise un middleware `basicAuth` dans :
-
-```text
-traefik/dynamic/middlewares.yml
-```
-
-Générer un hash :
+Il n'y a pas de dashboard : le proxy n'expose aucune interface. Tout se fait
+depuis la VM.
 
 ```bash
-sudo apt install apache2-utils -y
-htpasswd -nbB admin 'mot-de-passe-fort'
+cd /opt/traefik
+docker compose logs -f traefik                          # routage, ACME, erreurs
+docker compose exec traefik traefik healthcheck --ping  # sonde interne
+tail -f traefik/logs/access.log                          # requêtes
 ```
 
-Puis remplacer la ligne :
-
-```yaml
-- "admin:$$2y$$05$$CHANGE_ME_CHANGE_ME_CHANGE_ME_CHANGE_ME_CHANGE_ME"
-```
-
-Attention : dans un fichier YAML Docker/Traefik, les `$` doivent être doublés en `$$`.
+Pour tracer un problème de routage, passer `TRAEFIK_LOG_LEVEL=DEBUG` dans
+`/opt/traefik/.env` puis `docker compose up -d --force-recreate traefik`.
 
 ## Utilisation dans un projet Docker
 

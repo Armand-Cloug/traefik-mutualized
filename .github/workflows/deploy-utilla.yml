@@ -1,0 +1,33 @@
+name: "🚀 Deploy — utilla (utilla.cloug.fr)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Wrapper : toute la config de cette VM est ici, en dur. Le seul secret consommé
+# est SSH_DEPLOY_KEY_UTILLA, porté par l'environnement GitHub `vms` et résolu
+# par _deploy.yml (qui déclare `environment:`) grâce à `secrets: inherit`.
+#
+# Ajouter une VM = copier ce fichier, changer les 3 valeurs de `with:`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      traefik_version:
+        description: "Tag GHCR à déployer (vide = version pilotée par le .env de la VM)"
+        required: false
+        type: string
+        default: ""
+      prune_dangling_images:
+        description: "docker image prune -f (dangling seulement) avant le pull"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/_deploy.yml
+    secrets: inherit
+    with:
+      secret_suffix: UTILLA
+      deploy_host: utilla.cloug.fr
+      traefik_version: ${{ inputs.traefik_version }}
+      prune_dangling_images: ${{ inputs.prune_dangling_images }}
