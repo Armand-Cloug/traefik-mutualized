@@ -12,6 +12,8 @@ name: "🚀 Deploy (réutilisable)"
 # survivent à tous les déploiements.
 #
 # Ce proxy n'a AUCUN secret applicatif : pas de dashboard, rien d'exposé.
+# Aucune valeur de configuration ne vient de GitHub non plus — le .env est géré
+# à la main sur chaque VM, comme chez aYaline.
 #
 # ── Secrets ──
 # Un SEUL environnement GitHub porte toutes les clés, nommées par serveur :
@@ -20,8 +22,6 @@ name: "🚀 Deploy (réutilisable)"
 # `environment:` — d'où la structure : ce workflow le déclare, et les wrappers
 # appellent avec `secrets: inherit` (aucun bloc `secrets:` déclaré ici).
 #
-# La variable TRAEFIK_ACME_EMAIL est partagée par les VMs ; elle peut être
-# surchargée par serveur avec TRAEFIK_ACME_EMAIL_<SUFFIX>.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -84,16 +84,6 @@ jobs:
         run: |
           chmod +x .github/scripts/*.sh
           .github/scripts/check_docker_compose.sh docker-compose.yml
-
-      - name: Contrôle de la variable ACME
-        env:
-          ACME_EMAIL: ${{ vars[format('TRAEFIK_ACME_EMAIL_{0}', inputs.secret_suffix)] || vars.TRAEFIK_ACME_EMAIL }}
-        run: |
-          if [ -z "$ACME_EMAIL" ]; then
-            echo "::error::Variable TRAEFIK_ACME_EMAIL introuvable dans l'environnement '${{ inputs.environment }}' (ni TRAEFIK_ACME_EMAIL_${{ inputs.secret_suffix }})."
-            exit 1
-          fi
-          echo "[OK] e-mail Let's Encrypt configuré."
 
       - name: Préparation SSH
         env:
@@ -169,7 +159,6 @@ jobs:
       - name: Déploiement distant (pull → up)
         env:
           DEPLOY_PATH: ${{ inputs.deploy_path }}
-          TRAEFIK_ACME_EMAIL: ${{ vars[format('TRAEFIK_ACME_EMAIL_{0}', inputs.secret_suffix)] || vars.TRAEFIK_ACME_EMAIL }}
           # Vide => on ne touche pas au TRAEFIK_VERSION du .env de la VM.
           TRAEFIK_VERSION: ${{ inputs.traefik_version }}
           # Login registry éphémère sur la VM : le token meurt avec le job et

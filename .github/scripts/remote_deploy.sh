@@ -7,7 +7,6 @@
 #
 # Entrées (env) :
 #   DEPLOY_PATH          répertoire de déploiement sur la VM      (obligatoire)
-#   TRAEFIK_ACME_EMAIL   e-mail du compte Let's Encrypt           (obligatoire)
 #   TRAEFIK_VERSION      tag d'image à figer dans le .env de la VM ;
 #                        VIDE => on ne touche pas au .env, c'est le serveur
 #                        qui pilote la version                     (optionnel)
@@ -34,12 +33,11 @@ set -e
 
 die() { echo "[remote_deploy] $1" >&2; exit 1; }
 
-[ -n "$DEPLOY_PATH" ]        || die "DEPLOY_PATH vide"
-[ -n "$TRAEFIK_ACME_EMAIL" ] || die "TRAEFIK_ACME_EMAIL vide (variable GitHub manquante ?)"
+[ -n "$DEPLOY_PATH" ] || die "DEPLOY_PATH vide"
 
 # Ces valeurs sont réinjectées telles quelles dans le script distant : on refuse
 # tout ce qui pourrait en sortir (quote, backslash, retour ligne, substitution).
-for v in "$DEPLOY_PATH" "$TRAEFIK_ACME_EMAIL" "$TRAEFIK_VERSION"; do
+for v in "$DEPLOY_PATH" "$TRAEFIK_VERSION"; do
   case "$v" in
     *[\'\"\\\`\$]*|*"
 "*) die "valeur invalide (caractère interdit) : $v" ;;
@@ -70,9 +68,13 @@ if [ ! -e .env ]; then
 fi
 EOF
 
-# set_env est émis en heredoc *quoté* : son corps ne doit pas être interprété
-# côté runner. Les valeurs, elles, arrivent par les appels ci-dessous.
-cat <<'EOF'
+# TRAEFIK_VERSION est la SEULE clé que la CI écrive dans le .env de la VM, et
+# seulement quand une version est passée en input. Le reste du fichier est géré
+# à la main sur le serveur.
+if [ -n "$TRAEFIK_VERSION" ]; then
+  # set_env est émis en heredoc *quoté* : son corps ne doit pas être interprété
+  # côté runner. La valeur, elle, arrive par l'appel qui suit.
+  cat <<'EOF'
 set_env() {
   if grep -q "^$1=" .env; then
     sed -i "s|^$1=.*|$1=$2|" .env
@@ -81,12 +83,6 @@ set_env() {
   fi
 }
 EOF
-
-cat <<EOF
-set_env TRAEFIK_ACME_EMAIL '$TRAEFIK_ACME_EMAIL'
-EOF
-
-if [ -n "$TRAEFIK_VERSION" ]; then
   cat <<EOF
 set_env TRAEFIK_VERSION '$TRAEFIK_VERSION'
 echo "[Deploy] version figée par la CI : $TRAEFIK_VERSION"
@@ -96,6 +92,25 @@ else
 echo "[Deploy] version pilotée par le .env du serveur : $(grep '^TRAEFIK_VERSION=' .env || echo '(défaut du compose)')"
 EOF
 fi
+
+# ── Le .env est géré À LA MAIN sur la VM : on vérifie qu'il est renseigné ────
+# Modèle aYaline : la CI ne connaît aucune valeur applicative. Premier
+# déploiement => .env créé depuis .env.dist, on s'arrête avec un message clair,
+# l'admin le remplit, on relance.
+cat <<'EOF'
+ACME_EMAIL="$(grep -E '^TRAEFIK_ACME_EMAIL=' .env | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
+if [ -z "$ACME_EMAIL" ]; then
+  echo "[ERREUR] TRAEFIK_ACME_EMAIL est vide dans $PWD/.env"
+  echo "         Let's Encrypt exige une adresse de contact : sans elle Traefik"
+  echo "         ne peut créer aucun compte ACME, donc aucun certificat."
+  echo ""
+  echo "         Sur cette VM :"
+  echo "           sed -i 's|^TRAEFIK_ACME_EMAIL=.*|TRAEFIK_ACME_EMAIL=toi@exemple.fr|' $PWD/.env"
+  echo "         puis relance le déploiement."
+  exit 1
+fi
+echo "[Deploy] TRAEFIK_ACME_EMAIL renseigné dans le .env du serveur"
+EOF
 
 # ── État persistant : jamais écrasé, jamais rsyncé ───────────────────────────
 cat <<'EOF'

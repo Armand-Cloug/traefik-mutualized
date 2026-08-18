@@ -76,11 +76,15 @@ serveur :
 | Secret | `SSH_DEPLOY_KEY_ALLITU` | clé privée SSH `deploy@allitu.cloug.fr` |
 | Secret | `SSH_DEPLOY_KEY_UTILLA` | clé privée SSH `deploy@utilla.cloug.fr` |
 | Secret | `SSH_DEPLOY_KEY_BDE_PROD` | clé privée SSH `deploy@bde-ensar.fr` |
-| Variable | `TRAEFIK_ACME_EMAIL` | e-mail du compte Let's Encrypt |
 
-Rien d'autre : hôtes, users SSH, chemins `/opt/traefik` et namespace registry
-sont en dur dans les workflows. Les clés SSH sont les seuls secrets, et elles ne
-concernent que l'accès aux machines — le proxy lui-même n'en a aucun.
+**Trois clés SSH, aucune variable.** Hôtes, users SSH, chemins `/opt/traefik` et
+namespace registry sont en dur dans les workflows. Toute la configuration
+(`TRAEFIK_ACME_EMAIL`, `TRAEFIK_LOG_LEVEL`, `TRAEFIK_VERSION`) vit dans
+`/opt/traefik/.env` **sur chaque VM**, écrit à la main — la CI ne le lit pas et
+n'y touche que pour figer `TRAEFIK_VERSION` sur demande explicite.
+
+Le premier déploiement crée ce `.env` depuis `.env.dist` puis s'arrête tant que
+`TRAEFIK_ACME_EMAIL` est vide.
 
 | Suffixe | Hôte |
 |---|---|

@@ -67,15 +67,14 @@ clés — nommées par serveur :
 | Secret | `SSH_DEPLOY_KEY_ALLITU` | clé privée SSH de `deploy@allitu.cloug.fr` |
 | Secret | `SSH_DEPLOY_KEY_UTILLA` | clé privée SSH de `deploy@utilla.cloug.fr` |
 | Secret | `SSH_DEPLOY_KEY_BDE_PROD` | clé privée SSH de `deploy@bde-ensar.fr` |
-| Variable | `TRAEFIK_ACME_EMAIL` | e-mail du compte Let's Encrypt (partagé) |
 
-C'est **tout** ce qui vit dans GitHub — et ce sont les seuls secrets du projet,
-tous liés à l'accès aux machines. Le proxy lui-même n'a aucun secret : pas de
-dashboard, pas d'UI, rien d'exposé, comme `aya-proxy` chez aYaline. Hôtes,
-users SSH, chemins `/opt` et namespace registry sont en dur dans les workflows.
-
-Surcharge possible par VM : une variable `TRAEFIK_ACME_EMAIL_<SUFFIX>`
-(ex. `TRAEFIK_ACME_EMAIL_BDE_PROD`) prend le pas sur la variable partagée.
+**Trois clés SSH, et rien d'autre. Aucune variable.** Ce sont les seuls secrets
+du projet et ils ne concernent que l'accès aux machines. Le proxy lui-même n'a
+aucun secret — pas de dashboard, pas d'UI, rien d'exposé, comme `aya-proxy` chez
+aYaline. Hôtes, users SSH, chemins `/opt` et namespace registry sont en dur dans
+les workflows ; toute la configuration applicative vit dans le `.env` de chaque
+VM, que la CI ne lit ni n'écrit (sauf `TRAEFIK_VERSION`, et seulement sur
+demande explicite).
 
 > Les secrets d'environnement ne sont résolus que par un job qui porte
 > `environment:`. C'est `_deploy.yml` qui le déclare ; les wrappers appellent
@@ -127,9 +126,21 @@ sudo usermod -aG docker deploy
 docker network create traefik_proxy 2>/dev/null || true
 ```
 
-Le reste est géré par le déploiement : `.env` créé depuis `.env.dist`,
-`traefik/logs/` et `traefik/acme.json` (mode 600) créés s'ils manquent.
-**Rien d'autre n'est à créer à la main sur la VM.**
+Le reste est géré par le déploiement : `traefik/logs/` et `traefik/acme.json`
+(mode 600) créés s'ils manquent, `.env` créé depuis `.env.dist`.
+
+### 5. Renseigner le `.env` de la VM
+
+Le premier déploiement crée `/opt/traefik/.env` depuis `.env.dist` puis
+**s'arrête** : `TRAEFIK_ACME_EMAIL` y est vide, et sans adresse de contact
+Let's Encrypt ne crée aucun compte ACME, donc aucun certificat.
+
+```bash
+sed -i 's|^TRAEFIK_ACME_EMAIL=.*|TRAEFIK_ACME_EMAIL=toi@exemple.fr|' /opt/traefik/.env
+```
+
+Puis relancer le déploiement. C'est le fonctionnement aYaline : le `.env` est
+géré à la main sur le serveur, la CI n'en connaît aucune valeur.
 
 ## Utilisation
 
@@ -167,7 +178,7 @@ Le déploiement lui-même est un script généré par `scripts/remote_deploy.sh`
 exécuté via `ssh 'sh -s'` :
 
 ```
-.env (créé si absent) → set_env TRAEFIK_ACME_EMAIL
+.env (créé si absent) → TRAEFIK_ACME_EMAIL renseigné ?
 → acme.json + logs garantis → réseau traefik_proxy
 → login GHCR → pull → up -d --force-recreate
 → conteneur running ? → traefik healthcheck --ping → resolver ACME chargé ?

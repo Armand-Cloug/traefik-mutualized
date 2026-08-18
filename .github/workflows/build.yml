@@ -56,8 +56,8 @@ jobs:
 
       - name: Interpolation du compose
         env:
-          # Renseigné côté serveur par le job de déploiement ; ici on ne teste
-          # que l'interpolation du fichier.
+          # Valeur factice : ce champ vient du .env de la VM, jamais de la CI.
+          # Ici on ne teste que l'interpolation du fichier.
           TRAEFIK_ACME_EMAIL: validate@example.com
         run: |
           cp .env.dist .env
